@@ -3,19 +3,48 @@
 A Streamlit app that generates printable Mandala art (and animal characters)
 using OpenAI's latest gpt-image-1 model.
 
-HOW TO RUN:
-1. Install requirements: pip install streamlit openai pillow requests fpdf2
-2. Run: streamlit run mandala_app.py
-3. Enter your OpenAI API key in the sidebar
-4. Type one word and click Generate!
+HOW TO RUN LOCALLY:
+1. pip install -r requirements.txt
+2. Create a file called .streamlit/secrets.toml and add:
+      OPENAI_API_KEY = "sk-your-key-here"
+   OR just paste the key in the sidebar when the app opens.
+3. streamlit run mandala_app.py
+
+HOW TO DEPLOY (Streamlit Community Cloud):
+1. Push both files to GitHub
+2. Deploy on share.streamlit.io
+3. Go to App Settings → Secrets → paste:
+      OPENAI_API_KEY = "sk-your-key-here"
+4. The app will never ask for your key again!
 """
 
 import streamlit as st
 import openai
 import base64
 import io
-import requests
+import os
 from PIL import Image
+
+# ─────────────────────────────────────────────
+# Auto-load API key from Streamlit Secrets or env
+# ─────────────────────────────────────────────
+def get_api_key():
+    """
+    Priority order:
+    1. Streamlit Secrets (cloud deployment / local secrets.toml)
+    2. Environment variable OPENAI_API_KEY
+    3. Manual entry in the sidebar (fallback)
+    """
+    try:
+        key = st.secrets.get("OPENAI_API_KEY", "")
+        if key:
+            return key, True   # (key, is_pre_configured)
+    except Exception:
+        pass
+    env_key = os.environ.get("OPENAI_API_KEY", "")
+    if env_key:
+        return env_key, True
+    return "", False
 
 # ─────────────────────────────────────────────
 # Page configuration
@@ -99,22 +128,58 @@ st.markdown("""
 
 
 # ─────────────────────────────────────────────
-# Sidebar – API Key & Settings
+# Resolve API key (secrets → env → sidebar input)
+# ─────────────────────────────────────────────
+auto_key, key_is_set = get_api_key()
+
+# ─────────────────────────────────────────────
+# Sidebar – Settings
 # ─────────────────────────────────────────────
 with st.sidebar:
     st.markdown("## ⚙️ Settings")
-    api_key = st.text_input(
-        "🔑 OpenAI API Key",
-        type="password",
-        placeholder="sk-...",
-        help="Your key stays in your browser session only – never stored.",
-    )
+
+    if key_is_set:
+        # Key loaded automatically — show a green confirmation, no input box
+        st.success("🔑 API key loaded automatically!", icon="✅")
+        api_key = auto_key
+    else:
+        # Fallback: let the user paste their key manually
+        st.warning("No API key found in Secrets.", icon="⚠️")
+        api_key = st.text_input(
+            "🔑 Paste your OpenAI API Key",
+            type="password",
+            placeholder="sk-...",
+            help=(
+                "To avoid entering this every time, add your key to "
+                "Streamlit Secrets (Settings → Secrets) as:\n\n"
+                "OPENAI_API_KEY = \"sk-...\""
+            ),
+        )
+        st.caption(
+            "💡 **Fix this permanently:** "
+            "Go to your app on share.streamlit.io → "
+            "⋮ menu → Settings → Secrets → paste your key there."
+        )
     st.markdown("---")
 
     art_mode = st.selectbox(
         "🎨 Art Mode",
-        ["Mandala (Coloring)", "Animal Character (Coloring)"],
-        help="Mandala = circular geometric patterns. Animal = cute character outline."
+        [
+            "Mandala – Black & White (Coloring)",
+            "Mandala – Dot Art / Painted (Colored)",
+            "Mandala – Mehndi / Henna Style",
+            "Mandala – Geometric Sacred",
+            "Mandala – Watercolor Splash",
+            "Animal Character (Coloring)",
+        ],
+        help=(
+            "Black & White = printable coloring sheet\n"
+            "Dot Art = teal & gold painted mandala style (like the image!)\n"
+            "Mehndi = intricate henna-inspired patterns\n"
+            "Geometric Sacred = sharp, mathematical patterns\n"
+            "Watercolor = soft painted look with color washes\n"
+            "Animal = cute character outline for coloring"
+        )
     )
 
     quality = st.selectbox(
@@ -143,7 +208,10 @@ with st.sidebar:
     • Get your API key at <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com</a><br>
     • Low quality is fastest & cheapest<br>
     • High quality = best for printing<br>
-    • Use <b>1024×1024</b> for standard paper
+    • Use <b>1024×1024</b> for standard paper<br>
+    • <b>Dot Art</b> style = teal &amp; gold painted look<br>
+    • <b>Mehndi</b> = henna-inspired brown on cream<br>
+    • <b>Watercolor</b> = soft, colorful painted style
     </div>
     """, unsafe_allow_html=True)
 
@@ -215,6 +283,7 @@ with col2:
 # ─────────────────────────────────────────────
 def build_prompt(word: str, mode: str) -> str:
     word = word.strip().lower()
+
     if "Animal" in mode:
         return (
             f"A cute {word} animal character in a thick black outline coloring book style. "
@@ -223,7 +292,49 @@ def build_prompt(word: str, mode: str) -> str:
             f"Add small decorative floral and geometric patterns inside the body outline for coloring. "
             f"The line art must be crisp, bold, and suitable for printing and hand-coloring."
         )
-    else:
+
+    elif "Dot Art" in mode:
+        return (
+            f"A stunning dot-art painted mandala inspired by '{word}'. "
+            f"Rich teal and turquoise background with intricate gold and metallic dot patterns. "
+            f"Multiple concentric rings of petals, leaves, and eye motifs filled with tiny raised dots. "
+            f"Pointillism technique — every detail formed by dots of metallic gold, deep teal, and brown. "
+            f"Painted on a textured canvas surface. Ornate, jewel-like, deeply colorful and three-dimensional. "
+            f"Centered composition, perfectly symmetrical, highly detailed mandala art. "
+            f"Style: Indian dot mandala painting, similar to Pebble art or rock painting mandalas."
+        )
+
+    elif "Mehndi" in mode:
+        return (
+            f"An intricate mehndi / henna-style mandala inspired by '{word}'. "
+            f"Deep brown henna tones on a warm cream/ivory background. "
+            f"Extremely fine line work with paisleys, lotus petals, leafy vines, teardrops, and dots. "
+            f"Traditional Indian bridal henna patterns arranged in perfect circular symmetry. "
+            f"Multiple decorative rings radiating outward, filled with micro-detail floral motifs. "
+            f"Authentic henna art style, elegant and feminine, high contrast, print quality."
+        )
+
+    elif "Geometric Sacred" in mode:
+        return (
+            f"A sacred geometry mandala inspired by '{word}'. "
+            f"Perfect mathematical precision — Flower of Life, Sri Yantra, and Metatron's Cube elements. "
+            f"Sharp, clean vector-like black lines on pure white background. "
+            f"Interlocking triangles, hexagons, circles, and star polygons in exact geometric harmony. "
+            f"No organic curves — only straight lines and perfect arcs. "
+            f"Minimalist yet deeply intricate, suitable for high-res printing and coloring."
+        )
+
+    elif "Watercolor" in mode:
+        return (
+            f"A beautiful watercolor mandala inspired by '{word}'. "
+            f"Soft, flowing washes of color — purples, pinks, teals, and golds bleeding into each other. "
+            f"Delicate black ink outlines with loose, painterly watercolor fills. "
+            f"The center radiates lighter tones, deepening to rich saturated hues at the edges. "
+            f"Artistic, dreamy, and ethereal. Painted on white watercolor paper texture. "
+            f"Professional watercolor illustration style, intricate floral mandala with color washes."
+        )
+
+    else:  # Default Black & White coloring
         return (
             f"A highly intricate, symmetrical mandala inspired by the concept of '{word}'. "
             f"The mandala should be perfectly circular with multiple concentric rings filled with "
@@ -310,20 +421,134 @@ if "img_bytes" in st.session_state:
     # Printing tip
     st.markdown("""
     <div class="tip-box">
-    🖨️ <b>Printing Tip:</b> Download the PNG below and print on A4 / Letter paper.
-    Set your printer to <b>Fit to page</b> and use <b>Black & White / Grayscale</b> mode
-    for best ink-saving results. Works great with a laser or inkjet printer!
+    🖨️ <b>Printing Tip:</b> Choose your download format below.
+    For best print quality use <b>PDF (A4)</b> — it fits perfectly on paper.
+    Set your printer to <b>Black & White / Grayscale</b> to save ink!
     </div>
     """, unsafe_allow_html=True)
 
-    # Download PNG
-    st.download_button(
-        label="⬇️ Download PNG (for printing)",
-        data=img_bytes,
-        file_name=f"mandala_{word_used.replace(' ', '_')}.png",
-        mime="image/png",
-        use_container_width=True,
+    # ── Download format selector ──────────────────────────────
+    st.markdown("#### ⬇️ Download Your Art")
+
+    fmt = st.radio(
+        "Choose file format:",
+        options=["PNG  🖼️", "JPG  📷", "PDF – A4 Print Ready  📄", "PDF – Letter Print Ready  📃"],
+        horizontal=True,
+        help=(
+            "PNG = best quality, transparent background support\n"
+            "JPG = smaller file size, solid white background\n"
+            "PDF A4 = perfect for A4 paper printing (Europe/Asia)\n"
+            "PDF Letter = perfect for US Letter paper printing"
+        ),
     )
+
+    # ── Convert image to the chosen format ────────────────────
+    img_pil = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    fname_base = f"mandala_{word_used.replace(' ', '_')}"
+
+    if fmt.startswith("PNG"):
+        # PNG – lossless, best quality
+        buf = io.BytesIO()
+        img_pil.save(buf, format="PNG", optimize=True)
+        dl_bytes = buf.getvalue()
+        dl_name  = f"{fname_base}.png"
+        dl_mime  = "image/png"
+
+    elif fmt.startswith("JPG"):
+        # JPG – smaller file, white background
+        buf = io.BytesIO()
+        img_pil.save(buf, format="JPEG", quality=95, optimize=True)
+        dl_bytes = buf.getvalue()
+        dl_name  = f"{fname_base}.jpg"
+        dl_mime  = "image/jpeg"
+
+    else:
+        # PDF – embed image centred on the chosen paper size
+        from fpdf import FPDF
+
+        # Paper dimensions in mm
+        if "A4" in fmt:
+            pw, ph = 210, 297          # A4 portrait
+            paper_label = "A4"
+        else:
+            pw, ph = 215.9, 279.4      # US Letter portrait
+            paper_label = "Letter"
+
+        # Save PIL image to a temp PNG buffer for fpdf
+        tmp = io.BytesIO()
+        img_pil.save(tmp, format="PNG")
+        tmp.seek(0)
+
+        # Write temp PNG to a temp file path (fpdf needs a path)
+        import tempfile, os
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
+            tf.write(tmp.read())
+            tmp_path = tf.name
+
+        try:
+            pdf = FPDF(orientation="P", unit="mm", format=(pw, ph))
+            pdf.set_margins(10, 10, 10)
+            pdf.add_page()
+
+            # Centre image on page with 10 mm margins
+            usable_w = pw - 20
+            usable_h = ph - 20
+            img_w_px, img_h_px = img_pil.size
+            ratio = min(usable_w / img_w_px * 96,   # 96 dpi approx
+                        usable_h / img_h_px * 96)
+            img_w_mm = img_w_px * ratio / 96 * 25.4
+            img_h_mm = img_h_px * ratio / 96 * 25.4
+
+            # Clamp to usable area
+            if img_w_mm > usable_w:
+                scale = usable_w / img_w_mm
+                img_w_mm *= scale
+                img_h_mm *= scale
+            if img_h_mm > usable_h:
+                scale = usable_h / img_h_mm
+                img_w_mm *= scale
+                img_h_mm *= scale
+
+            x_off = (pw - img_w_mm) / 2
+            y_off = (ph - img_h_mm) / 2
+            pdf.image(tmp_path, x=x_off, y=y_off, w=img_w_mm, h=img_h_mm)
+
+            # Tiny footer
+            pdf.set_y(ph - 8)
+            pdf.set_font("Helvetica", "I", 7)
+            pdf.set_text_color(180, 180, 180)
+            pdf.cell(0, 4, f"Mandala Art — '{word_used}' | Generated by Mandala Art Generator", align="C")
+
+            dl_bytes = bytes(pdf.output())
+        finally:
+            os.unlink(tmp_path)
+
+        dl_name = f"{fname_base}_{paper_label}.pdf"
+        dl_mime = "application/pdf"
+
+    # ── Download button ───────────────────────────────────────
+    st.download_button(
+        label=f"⬇️ Download  {dl_name}",
+        data=dl_bytes,
+        file_name=dl_name,
+        mime=dl_mime,
+        use_container_width=True,
+        type="primary",
+    )
+
+    # Format guide
+    with st.expander("📋 Which format should I choose?", expanded=False):
+        st.markdown("""
+        | Format | Best For | File Size | Quality |
+        |--------|----------|-----------|---------|
+        | **PNG** | Digital sharing, high-res printing | Medium | ⭐⭐⭐⭐⭐ Lossless |
+        | **JPG** | Email, WhatsApp, social media | Small | ⭐⭐⭐⭐ Great |
+        | **PDF A4** | Printing in India, Europe, Asia | Medium | ⭐⭐⭐⭐⭐ Print perfect |
+        | **PDF Letter** | Printing in USA, Canada | Medium | ⭐⭐⭐⭐⭐ Print perfect |
+
+        💡 **Tip for best coloring results:** Print PDF at **100% scale** (no "fit to page") 
+        on **thick paper (120–160 gsm)** so markers don't bleed through.
+        """)
 
     # Show prompt used (collapsible)
     with st.expander("🔍 See the prompt sent to AI", expanded=False):
@@ -347,10 +572,10 @@ st.markdown("### 💡 Inspiration Word Ideas")
 col_m, col_a = st.columns(2)
 with col_m:
     st.markdown("""
-    **🌸 For Mandala:**
+    **🌸 For Any Mandala Style:**
     `ocean` · `fire` · `peace` · `lotus` · `moon`
-    `forest` · `love` · `star` · `breath` · `mandala`
-    `cosmos` · `bloom` · `zen` · `infinity` · `storm`
+    `forest` · `love` · `star` · `cosmos` · `storm`
+    `bloom` · `zen` · `infinity` · `divine` · `soul`
     """)
 with col_a:
     st.markdown("""
@@ -358,6 +583,33 @@ with col_a:
     `elephant` · `fox` · `peacock` · `lion` · `owl`
     `butterfly` · `tiger` · `deer` · `parrot` · `turtle`
     `whale` · `koala` · `wolf` · `cat` · `dragon`
+    """)
+
+st.markdown("### 🎨 Style Guide")
+c1, c2, c3 = st.columns(3)
+with c1:
+    st.markdown("""
+    **🔵 Dot Art / Painted**
+    Teal & gold, jewel-like,
+    raised dot patterns.
+    Best words: `ocean` `peacock`
+    `emerald` `cosmos` `teal`
+    """)
+with c2:
+    st.markdown("""
+    **🟤 Mehndi / Henna**
+    Brown on cream, fine
+    paisleys & floral vines.
+    Best words: `love` `bride`
+    `lotus` `jasmine` `faith`
+    """)
+with c3:
+    st.markdown("""
+    **💜 Watercolor Splash**
+    Soft dreamy color washes,
+    painterly & ethereal.
+    Best words: `dream` `bloom`
+    `sky` `aurora` `dusk`
     """)
 
 
