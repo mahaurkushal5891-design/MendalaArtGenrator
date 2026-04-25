@@ -1,348 +1,373 @@
-import streamlit as st
-import math
-import json
-import io
-import random
-from PIL import Image, ImageDraw
-from openai import OpenAI
-from reportlab.pdfgen import canvas as rl_canvas
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.utils import ImageReader
+"""
+🌸 Mandala & Character Art Generator
+A Streamlit app that generates printable Mandala art (and animal characters)
+using OpenAI's latest gpt-image-1 model.
 
-# ── Page config ──────────────────────────────────────────────────────────────
+HOW TO RUN:
+1. Install requirements: pip install streamlit openai pillow requests fpdf2
+2. Run: streamlit run mandala_app.py
+3. Enter your OpenAI API key in the sidebar
+4. Type one word and click Generate!
+"""
+
+import streamlit as st
+import openai
+import base64
+import io
+import requests
+from PIL import Image
+
+# ─────────────────────────────────────────────
+# Page configuration
+# ─────────────────────────────────────────────
 st.set_page_config(
-    page_title="Mandala Art Generator",
+    page_title="🌸 Mandala Art Generator",
     page_icon="🌸",
     layout="centered",
 )
 
-# ── Styling ───────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────
+# Custom CSS – warm, artistic, print-friendly look
+# ─────────────────────────────────────────────
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600&display=swap');
-h1 { font-family: 'Cinzel', serif; letter-spacing: 3px; text-align: center; }
-.subtitle { text-align: center; color: #888; font-size: 0.85rem;
-            letter-spacing: 2px; text-transform: uppercase; margin-top: -1rem; }
-.stButton>button { width: 100%; border-radius: 8px; font-weight: 600; }
+    @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700&family=Lato:wght@300;400&display=swap');
+
+    html, body, [class*="css"] {
+        font-family: 'Lato', sans-serif;
+    }
+    .main { background: #fdf8f2; }
+    h1, h2, h3 { font-family: 'Cinzel', serif; color: #3a2d1e; }
+
+    .hero-title {
+        font-family: 'Cinzel', serif;
+        font-size: 2.6rem;
+        color: #3a2d1e;
+        text-align: center;
+        margin-bottom: 0.2rem;
+    }
+    .hero-sub {
+        text-align: center;
+        color: #7a6652;
+        font-size: 1.05rem;
+        margin-bottom: 2rem;
+    }
+    .stButton > button {
+        background: linear-gradient(135deg, #c9853a, #e8a95b);
+        color: white;
+        border: none;
+        border-radius: 30px;
+        padding: 0.65rem 2.2rem;
+        font-size: 1.05rem;
+        font-family: 'Cinzel', serif;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        width: 100%;
+    }
+    .stButton > button:hover {
+        background: linear-gradient(135deg, #a06428, #c9853a);
+        transform: translateY(-2px);
+        box-shadow: 0 6px 18px rgba(0,0,0,0.15);
+    }
+    .info-box {
+        background: #fff8ee;
+        border-left: 4px solid #c9853a;
+        padding: 1rem 1.2rem;
+        border-radius: 6px;
+        margin: 1rem 0;
+        color: #3a2d1e;
+        font-size: 0.95rem;
+    }
+    .tip-box {
+        background: #eef8f0;
+        border-left: 4px solid #4caf7d;
+        padding: 0.9rem 1.2rem;
+        border-radius: 6px;
+        margin: 1rem 0;
+        color: #1e3a2d;
+        font-size: 0.9rem;
+    }
+    .footer {
+        text-align: center;
+        color: #aaa;
+        font-size: 0.8rem;
+        margin-top: 3rem;
+        padding-bottom: 2rem;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🌸 Mandala Generator")
-st.markdown('<p class="subtitle">One word · Infinite geometry · Ready to colour</p>',
-            unsafe_allow_html=True)
-st.markdown("---")
 
-# ── Sidebar – API key ─────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────
+# Sidebar – API Key & Settings
+# ─────────────────────────────────────────────
 with st.sidebar:
-    st.header("🔑 OpenAI API Key")
+    st.markdown("## ⚙️ Settings")
     api_key = st.text_input(
-        "Paste your key here",
+        "🔑 OpenAI API Key",
         type="password",
         placeholder="sk-...",
-        help="Your key is never stored. It lives only in this session.",
+        help="Your key stays in your browser session only – never stored.",
     )
-    st.caption("Get a key at [platform.openai.com](https://platform.openai.com)")
     st.markdown("---")
-    st.subheader("🎨 Drawing options")
-    canvas_size = st.slider("Canvas size (px)", 600, 1400, 900, 100)
-    line_width   = st.slider("Line thickness", 1, 5, 2)
-    st.markdown("---")
-    st.info("**How to use**\n1. Enter your OpenAI key\n2. Type an inspiration word\n3. Click Generate\n4. Download PNG or PDF")
 
-
-# ── Helper: ask OpenAI for mandala parameters ─────────────────────────────────
-def get_word_params(word: str, key: str) -> dict:
-    client = OpenAI(api_key=key)
-    system = """You are a generative-art assistant.
-Given one English word, return ONLY a valid JSON object with these keys:
-- petals: integer 6-16  (rotational symmetry, reflects the word's energy)
-- rings: integer 4-9    (concentric ring layers, reflects depth/complexity)
-- complexity: float 0.3-1.0  (intricacy level)
-- style: one of floral | geometric | classic | angular | organic
-No markdown, no extra text, just the raw JSON."""
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user",   "content": word},
-        ],
-        max_tokens=120,
-        temperature=0.7,
+    art_mode = st.selectbox(
+        "🎨 Art Mode",
+        ["Mandala (Coloring)", "Animal Character (Coloring)"],
+        help="Mandala = circular geometric patterns. Animal = cute character outline."
     )
-    return json.loads(response.choices[0].message.content.strip())
+
+    quality = st.selectbox(
+        "🖼️ Image Quality",
+        ["low", "medium", "high"],
+        index=1,
+        help="Higher quality = more detail but costs slightly more API credits."
+    )
+
+    image_size = st.selectbox(
+        "📐 Image Size",
+        ["1024x1024", "1024x1536 (Portrait)", "1536x1024 (Landscape)"],
+        index=0
+    )
+    size_map = {
+        "1024x1024": "1024x1024",
+        "1024x1536 (Portrait)": "1024x1536",
+        "1536x1024 (Landscape)": "1536x1024",
+    }
+    chosen_size = size_map[image_size]
+
+    st.markdown("---")
+    st.markdown("""
+    <div style="font-size:0.82rem; color:#7a6652;">
+    <b>💡 Beginner Tips</b><br>
+    • Get your API key at <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com</a><br>
+    • Low quality is fastest & cheapest<br>
+    • High quality = best for printing<br>
+    • Use <b>1024×1024</b> for standard paper
+    </div>
+    """, unsafe_allow_html=True)
 
 
-# ── Helper: deterministic RNG seeded from the word ────────────────────────────
-def make_rng(seed_str: str):
-    s = sum(ord(c) * (i + 1) for i, c in enumerate(seed_str)) % (2**32)
-    rng = random.Random(s)
-    return rng
+# ─────────────────────────────────────────────
+# Hero Header
+# ─────────────────────────────────────────────
+st.markdown('<div class="hero-title">🌸 Mandala Art Generator</div>', unsafe_allow_html=True)
+st.markdown('<div class="hero-sub">Type one word · Generate art · Print & Color 🖍️</div>', unsafe_allow_html=True)
 
 
-# ── Core drawing function (pure PIL) ─────────────────────────────────────────
-def draw_mandala(params: dict, word: str, size: int, lw: int) -> Image.Image:
-    petals     = int(params.get("petals", 8))
-    rings      = int(params.get("rings", 5))
-    complexity = float(params.get("complexity", 0.6))
-    style      = params.get("style", "classic")
+# ─────────────────────────────────────────────
+# How-to guide (collapsible)
+# ─────────────────────────────────────────────
+with st.expander("📖 How to use this app (Beginner's Guide)", expanded=False):
+    st.markdown("""
+    ### Step-by-Step Guide
 
-    img  = Image.new("RGB", (size, size), "white")
-    draw = ImageDraw.Draw(img)
-    rng  = make_rng(word + str(petals) + str(rings))
+    **Step 1 – Get an OpenAI API Key**
+    - Go to [platform.openai.com/api-keys](https://platform.openai.com/api-keys)
+    - Sign up or log in, then click **"Create new secret key"**
+    - Copy the key (starts with `sk-`)
+    - Paste it in the sidebar on the left
 
-    cx = cy = size // 2
-    max_r = int(size * 0.42)
-    lw_thin = max(1, lw - 1)
+    **Step 2 – Choose your Art Mode**
+    - **Mandala** → Beautiful circular geometric coloring pattern
+    - **Animal Character** → Cute animal outline you can color in
 
-    # ── Outer border rings ────────────────────────────────────────────────────
-    for offset in (8, 16):
-        r = max_r + int(size * offset / 900)
-        draw.ellipse(
-            [cx - r, cy - r, cx + r, cy + r],
-            outline="black", width=max(1, lw - 1),
-        )
+    **Step 3 – Type ONE Word of Inspiration**
+    - For Mandala: try words like *ocean*, *forest*, *love*, *fire*, *peace*
+    - For Animal: type an animal name like *elephant*, *fox*, *peacock*, *lion*
 
-    # ── Concentric ring circles ───────────────────────────────────────────────
-    for ring in range(1, rings + 1):
-        r = int((ring / rings) * max_r)
-        draw.ellipse([cx - r, cy - r, cx + r, cy + r],
-                     outline="black", width=lw_thin)
+    **Step 4 – Click "Generate Art"**
+    - Wait 15–30 seconds for the image to be created
+    - The art will appear on screen
 
-    # ── Per-ring petal / motif drawing ────────────────────────────────────────
-    for ring in range(1, rings + 1):
-        r_out  = (ring / rings) * max_r
-        r_in   = ((ring - 1) / rings) * max_r
-        r_mid  = (r_out + r_in) / 2
-        band_h = r_out - r_in
+    **Step 5 – Download & Print**
+    - Click **"⬇️ Download PNG"** to save the image
+    - Open the file and print on **A4 / Letter** paper
+    - Use a black marker, colored pencils, or crayons to color!
 
-        for i in range(petals):
-            angle  = (i / petals) * 2 * math.pi
-            n_angle = ((i + 1) / petals) * 2 * math.pi
-            m_angle = (angle + n_angle) / 2
-
-            # Radial spoke
-            x0 = cx + r_in  * math.cos(angle)
-            y0 = cy + r_in  * math.sin(angle)
-            x1 = cx + r_out * math.cos(angle)
-            y1 = cy + r_out * math.sin(angle)
-            draw.line([(x0, y0), (x1, y1)], fill="black", width=lw_thin)
-
-            # ── Style-specific petal motif ────────────────────────────────────
-            if style in ("floral", "organic"):
-                # Leaf / teardrop petal
-                pw = band_h * 0.35 * (0.5 + complexity * 0.5)
-                points = []
-                steps  = 20
-                for k in range(steps + 1):
-                    t = k / steps
-                    pr = r_in + band_h * t
-                    offset_ang = pw / max(pr, 1) * math.sin(math.pi * t)
-                    points.append((
-                        cx + pr * math.cos(m_angle + offset_ang),
-                        cy + pr * math.sin(m_angle + offset_ang),
-                    ))
-                for k in range(steps, -1, -1):
-                    t = k / steps
-                    pr = r_in + band_h * t
-                    offset_ang = pw / max(pr, 1) * math.sin(math.pi * t)
-                    points.append((
-                        cx + pr * math.cos(m_angle - offset_ang),
-                        cy + pr * math.sin(m_angle - offset_ang),
-                    ))
-                if len(points) > 2:
-                    draw.polygon(points, outline="black", fill=None)
-
-            elif style in ("geometric", "angular"):
-                hw = math.sin(math.pi / petals) * r_mid * (0.5 + complexity * 0.3)
-                p1 = (cx + r_in  * math.cos(m_angle), cy + r_in  * math.sin(m_angle))
-                p2 = (cx + r_out * math.cos(m_angle - hw / r_out),
-                      cy + r_out * math.sin(m_angle - hw / r_out))
-                p3 = (cx + r_out * math.cos(m_angle + hw / r_out),
-                      cy + r_out * math.sin(m_angle + hw / r_out))
-                draw.polygon([p1, p2, p3], outline="black", fill=None)
-
-            else:  # classic / default diamond
-                hw = math.sin(math.pi / petals) * r_mid * 0.45
-                tip_in  = (cx + r_in  * math.cos(m_angle), cy + r_in  * math.sin(m_angle))
-                tip_out = (cx + r_out * math.cos(m_angle), cy + r_out * math.sin(m_angle))
-                side1   = (cx + r_mid * math.cos(m_angle - hw / r_mid),
-                           cy + r_mid * math.sin(m_angle - hw / r_mid))
-                side2   = (cx + r_mid * math.cos(m_angle + hw / r_mid),
-                           cy + r_mid * math.sin(m_angle + hw / r_mid))
-                draw.polygon([tip_in, side1, tip_out, side2],
-                             outline="black", fill=None)
-
-            # ── Dot accents ───────────────────────────────────────────────────
-            if complexity > 0.5 and ring % 2 == 0:
-                dx = cx + r_mid * math.cos(m_angle)
-                dy = cy + r_mid * math.sin(m_angle)
-                dot = int(size * 2 / 900)
-                draw.ellipse([dx - dot, dy - dot, dx + dot, dy + dot],
-                             fill="black")
-
-            # ── Inner arc decoration ──────────────────────────────────────────
-            if ring > 1 and complexity > 0.4:
-                arc_r  = int(r_in + band_h * 0.25)
-                span   = math.pi / petals * 0.7
-                a_start = math.degrees(m_angle - span)
-                a_end   = math.degrees(m_angle + span)
-                bbox    = [cx - arc_r, cy - arc_r, cx + arc_r, cy + arc_r]
-                draw.arc(bbox, start=a_start, end=a_end,
-                         fill="black", width=lw_thin)
-
-        # ── Dot ring between bands ────────────────────────────────────────────
-        if ring < rings and complexity > 0.55:
-            dot_n = petals * 2
-            for j in range(dot_n):
-                a  = (j / dot_n) * 2 * math.pi + (0.5 / petals) * 2 * math.pi
-                dr = r_out + int(size * 3 / 900)
-                dx = cx + dr * math.cos(a)
-                dy = cy + dr * math.sin(a)
-                dot = int(size * 1.5 / 900)
-                draw.ellipse([dx - dot, dy - dot, dx + dot, dy + dot],
-                             fill="black")
-
-    # ── Centre dot ────────────────────────────────────────────────────────────
-    cd = int(size * 5 / 900)
-    draw.ellipse([cx - cd, cy - cd, cx + cd, cy + cd], fill="black")
-
-    # ── Word label ────────────────────────────────────────────────────────────
-    label = f"~ {word.upper()} ~"
-    label_y = cy + max_r + int(size * 28 / 900)
-    draw.text((cx, label_y), label, fill="#444444", anchor="mm")
-
-    return img
+    ---
+    **⚠️ Important Notes:**
+    - You need an OpenAI account with credits (costs ~$0.02–$0.19 per image)
+    - Never share your API key with anyone
+    - The sidebar key field is password-protected and session-only
+    """)
 
 
-# ── PDF export ────────────────────────────────────────────────────────────────
-def img_to_pdf(img: Image.Image, word: str) -> bytes:
-    buf = io.BytesIO()
-    w_pt, h_pt = A4          # 595 × 842 points
-    c = rl_canvas.Canvas(buf, pagesize=A4)
+# ─────────────────────────────────────────────
+# Main Input
+# ─────────────────────────────────────────────
+st.markdown("### ✏️ Enter Your Inspiration Word")
 
-    # Title
-    c.setFont("Helvetica-Oblique", 14)
-    c.setFillColorRGB(0.2, 0.2, 0.2)
-    c.drawCentredString(w_pt / 2, h_pt - 36, f"Mandala  —  {word}")
-
-    # Image (centred, 90% of page width)
-    img_w = w_pt * 0.90
-    img_h = img_w  # square mandala
-    x = (w_pt - img_w) / 2
-    y = (h_pt - img_h) / 2 - 10
-
-    img_buf = io.BytesIO()
-    img.save(img_buf, format="PNG")
-    img_buf.seek(0)
-    c.drawImage(ImageReader(img_buf), x, y, width=img_w, height=img_h,
-                preserveAspectRatio=True)
-
-    c.setFont("Helvetica", 8)
-    c.setFillColorRGB(0.6, 0.6, 0.6)
-    c.drawCentredString(w_pt / 2, 20, "Print & colour at your own pace.")
-    c.save()
-    buf.seek(0)
-    return buf.read()
-
-
-# ── Main UI ───────────────────────────────────────────────────────────────────
-col1, col2, col3 = st.columns([1, 2, 1])
-with col2:
+col1, col2 = st.columns([3, 1])
+with col1:
     word = st.text_input(
-        "✨ Inspiration word",
-        placeholder="e.g. ocean, lotus, fire, serenity…",
+        "",
+        placeholder="e.g.  ocean  /  elephant  /  peace  /  lotus",
+        label_visibility="collapsed",
         max_chars=40,
     )
-    generate_btn = st.button("🌸 Generate Mandala", use_container_width=True)
+with col2:
+    generate_btn = st.button("🎨 Generate")
 
+
+# ─────────────────────────────────────────────
+# Prompt builder
+# ─────────────────────────────────────────────
+def build_prompt(word: str, mode: str) -> str:
+    word = word.strip().lower()
+    if "Animal" in mode:
+        return (
+            f"A cute {word} animal character in a thick black outline coloring book style. "
+            f"The character should be playful, child-friendly, symmetrical, centered on a pure white background. "
+            f"Use only black lines on white, NO gray fill, NO color, NO shading, NO gradients. "
+            f"Add small decorative floral and geometric patterns inside the body outline for coloring. "
+            f"The line art must be crisp, bold, and suitable for printing and hand-coloring."
+        )
+    else:
+        return (
+            f"A highly intricate, symmetrical mandala inspired by the concept of '{word}'. "
+            f"The mandala should be perfectly circular with multiple concentric rings filled with "
+            f"elaborate geometric patterns, petals, stars, paisleys, and fine line work. "
+            f"Pure black line art on a completely white background. "
+            f"NO gray, NO shading, NO color fill whatsoever — only black strokes on white. "
+            f"Suitable for adult coloring books, high print quality, centered composition, "
+            f"ornate and meditative in style. The motifs should subtly reflect '{word}'."
+        )
+
+
+# ─────────────────────────────────────────────
+# Generation logic
+# ─────────────────────────────────────────────
+def generate_image(prompt: str, api_key: str, quality: str, size: str):
+    """
+    Uses the latest OpenAI gpt-image-1 model via the Images API.
+    Returns raw image bytes.
+    """
+    client = openai.OpenAI(api_key=api_key)
+
+    response = client.images.generate(
+        model="gpt-image-1",          # Latest model (April 2026)
+        prompt=prompt,
+        n=1,
+        size=size,
+        quality=quality,              # "low" | "medium" | "high"
+        output_format="png",
+    )
+
+    # gpt-image-1 always returns base64
+    image_b64 = response.data[0].b64_json
+    image_bytes = base64.b64decode(image_b64)
+    return image_bytes
+
+
+# ─────────────────────────────────────────────
+# On Generate button click
+# ─────────────────────────────────────────────
 if generate_btn:
     if not api_key:
-        st.error("Please enter your OpenAI API key in the sidebar.")
+        st.error("🔑 Please enter your OpenAI API key in the sidebar first.")
     elif not word.strip():
-        st.warning("Please enter an inspiration word.")
+        st.error("✏️ Please enter an inspiration word.")
     else:
-        word = word.strip().lower()
-        with st.spinner(f'The oracle is meditating on "{word}"…'):
+        prompt = build_prompt(word, art_mode)
+
+        with st.spinner(f"✨ Creating your {'mandala' if 'Mandala' in art_mode else 'character'} art for **'{word}'**… this takes 20–40 seconds…"):
             try:
-                params = get_word_params(word, api_key)
-                st.session_state["params"] = params
-                st.session_state["word"]   = word
+                img_bytes = generate_image(prompt, api_key, quality, chosen_size)
+
+                # Store in session so it persists
+                st.session_state["img_bytes"] = img_bytes
+                st.session_state["word"] = word
+                st.session_state["mode"] = art_mode
+                st.session_state["prompt_used"] = prompt
+
+            except openai.AuthenticationError:
+                st.error("❌ Invalid API key. Please check and re-enter in the sidebar.")
+            except openai.RateLimitError:
+                st.error("⚠️ Rate limit reached. Please wait a moment and try again.")
+            except openai.BadRequestError as e:
+                st.error(f"⚠️ Request rejected by OpenAI: {e}\n\nTry a different word.")
             except Exception as e:
-                st.error(f"OpenAI error: {e}")
-                st.stop()
+                st.error(f"❌ An error occurred: {e}")
 
-        with st.spinner("Weaving sacred geometry…"):
-            img = draw_mandala(params, word, canvas_size, line_width)
-            st.session_state["img"] = img
 
-# ── Show result if available ──────────────────────────────────────────────────
-if "img" in st.session_state:
-    img    = st.session_state["img"]
-    word   = st.session_state["word"]
-    params = st.session_state["params"]
+# ─────────────────────────────────────────────
+# Display result
+# ─────────────────────────────────────────────
+if "img_bytes" in st.session_state:
+    img_bytes = st.session_state["img_bytes"]
+    word_used = st.session_state.get("word", "art")
+    mode_used = st.session_state.get("mode", "")
 
-    st.markdown(f"<h4 style='text-align:center;letter-spacing:2px;'>✦ Inspired by: <em>{word}</em> ✦</h4>",
-                unsafe_allow_html=True)
+    st.markdown("---")
+    label = "🌸 Your Mandala" if "Mandala" in mode_used else "🐾 Your Animal Character"
+    st.markdown(f"### {label} — *'{word_used}'*")
 
-    with st.expander("🔍 Geometry parameters used"):
-        st.json(params)
+    # Show image
+    img = Image.open(io.BytesIO(img_bytes))
+    st.image(img, use_container_width=True, caption=f"Inspired by: {word_used}")
 
-    st.image(img, use_container_width=True)
+    # Printing tip
+    st.markdown("""
+    <div class="tip-box">
+    🖨️ <b>Printing Tip:</b> Download the PNG below and print on A4 / Letter paper.
+    Set your printer to <b>Fit to page</b> and use <b>Black & White / Grayscale</b> mode
+    for best ink-saving results. Works great with a laser or inkjet printer!
+    </div>
+    """, unsafe_allow_html=True)
 
-    # ── Download section ──────────────────────────────────────────────────────
-    st.markdown("#### ⬇️ Download Your Mandala")
+    # Download PNG
+    st.download_button(
+        label="⬇️ Download PNG (for printing)",
+        data=img_bytes,
+        file_name=f"mandala_{word_used.replace(' ', '_')}.png",
+        mime="image/png",
+        use_container_width=True,
+    )
 
-    col_sel, col_btn = st.columns([2, 1])
+    # Show prompt used (collapsible)
+    with st.expander("🔍 See the prompt sent to AI", expanded=False):
+        st.code(st.session_state.get("prompt_used", ""), language=None)
 
-    with col_sel:
-        file_type = st.selectbox(
-            "Select file format",
-            options=["PNG — High-resolution image (best for digital use)",
-                     "PDF — A4 print-ready document (best for printing)",
-                     "JPEG — Compressed image (smaller file size)"],
-            index=0,
-            label_visibility="collapsed",
-        )
+    # Regenerate hint
+    st.markdown("""
+    <div class="info-box">
+    💡 <b>Want a different design?</b> Just click <b>Generate</b> again with the same or a new word —
+    each generation creates a unique piece of art!
+    </div>
+    """, unsafe_allow_html=True)
 
-    fmt = file_type.split("—")[0].strip()   # "PNG", "PDF", or "JPEG"
 
-    # Prepare the correct bytes based on selection
-    if fmt == "PNG":
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        download_data  = buf.getvalue()
-        download_name  = f"mandala-{word}.png"
-        download_mime  = "image/png"
-        download_label = "⬇️ Download PNG"
+# ─────────────────────────────────────────────
+# Example words showcase
+# ─────────────────────────────────────────────
+st.markdown("---")
+st.markdown("### 💡 Inspiration Word Ideas")
 
-    elif fmt == "PDF":
-        download_data  = img_to_pdf(img, word)
-        download_name  = f"mandala-{word}.pdf"
-        download_mime  = "application/pdf"
-        download_label = "⬇️ Download PDF"
+col_m, col_a = st.columns(2)
+with col_m:
+    st.markdown("""
+    **🌸 For Mandala:**
+    `ocean` · `fire` · `peace` · `lotus` · `moon`
+    `forest` · `love` · `star` · `breath` · `mandala`
+    `cosmos` · `bloom` · `zen` · `infinity` · `storm`
+    """)
+with col_a:
+    st.markdown("""
+    **🐾 For Animal Character:**
+    `elephant` · `fox` · `peacock` · `lion` · `owl`
+    `butterfly` · `tiger` · `deer` · `parrot` · `turtle`
+    `whale` · `koala` · `wolf` · `cat` · `dragon`
+    """)
 
-    else:  # JPEG
-        buf = io.BytesIO()
-        img.convert("RGB").save(buf, format="JPEG", quality=95)
-        download_data  = buf.getvalue()
-        download_name  = f"mandala-{word}.jpg"
-        download_mime  = "image/jpeg"
-        download_label = "⬇️ Download JPEG"
 
-    with col_btn:
-        st.download_button(
-            label=download_label,
-            data=download_data,
-            file_name=download_name,
-            mime=download_mime,
-            use_container_width=True,
-        )
-
-    # Format-specific tips
-    tips = {
-        "PNG":  "💡 PNG is lossless and ideal for large prints. Recommended for home printing.",
-        "PDF":  "💡 PDF is formatted for A4 paper. Just open and print — no resizing needed.",
-        "JPEG": "💡 JPEG is smaller in size. Good for sharing digitally, slightly less sharp when printed.",
-    }
-    st.caption(tips[fmt])
-    st.success("✅ Your mandala is ready! Print on white cardstock for the best colouring experience.")
+# ─────────────────────────────────────────────
+# Footer
+# ─────────────────────────────────────────────
+st.markdown("""
+<div class="footer">
+    Built with ❤️ using Streamlit + OpenAI gpt-image-1 · 
+    Images generated are for personal use · 
+    Happy coloring! 🖍️
+</div>
+""", unsafe_allow_html=True)
